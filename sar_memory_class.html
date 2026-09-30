@@ -464,7 +464,14 @@ function Host(){
   // create room, then subscribe
   metaRef(code).set({phase:"lobby",round:0,totalRounds:settings.rounds,hostId,createdAt:Date.now()});
   playersRef(code).on("value",s=>{players=s.val()||{};paint();});
-  answersRef(code).on("value",s=>{answers=s.val()||{};paint();});
+  answersRef(code).on("value",s=>{
+    answers = s.val() || {};
+    paint();
+
+    if(meta.phase === "question" && allPlayersAnswered()){
+      toReveal();
+    }
+  });
   metaRef(code).on("value",s=>{meta=s.val()||meta;paint();});
 
   function scoreboard(){
@@ -477,7 +484,19 @@ function Host(){
       .sort((a,b)=>b.pts-a.pts);
   }
   function answeredCount(){
-    const r=answers&&answers[meta.round];return r?Object.keys(r).length:0;
+    const r = (answers && answers[meta.round]) || {};
+    const expected = meta.expectedPlayers || [];
+
+    return expected.filter(pid => r[pid]).length;
+  }
+
+  function allPlayersAnswered(){
+    const expected = meta.expectedPlayers || [];
+    if(expected.length === 0) return false;
+
+    const r = (answers && answers[meta.round]) || {};
+
+    return expected.every(pid => r[pid]);
   }
 
   function startRound(){
@@ -490,29 +509,34 @@ function Host(){
     metaRef(code).update({phase:"study",round,cardId,qid,options,correctIndex,
       studyMs:settings.studyMs,answerMs:settings.answerMs,phaseStart:Date.now(),totalRounds:settings.totalRounds});
   }
-  function toQuestion(){ metaRef(code).update({phase:"question",phaseStart:Date.now()}); }
+  function toQuestion(){
+    const expectedPlayers = Object.keys(players || {});
+
+    metaRef(code).update({
+      phase:"question",
+      phaseStart:Date.now(),
+      expectedPlayers: expectedPlayers
+    });
+  }
   function toReveal(){ clearInterval(ticker); metaRef(code).update({phase:"reveal",phaseStart:Date.now()}); }
   function endGame(){ clearInterval(ticker); metaRef(code).update({phase:"ended",phaseStart:Date.now()}); }
 
   function runTimer(dur,onEnd){
     clearInterval(ticker);
     const end=Date.now()+dur;
+
     ticker=setInterval(()=>{
       const left=end-Date.now();
-      const bar=$("#bar"); const tv=$("#tv");
+      const bar=$("#bar");
+      const tv=$("#tv");
+
       if(bar)bar.style.width=Math.max(0,Math.min(100,left/dur*100))+"%";
       if(tv)tv.textContent=fmt(left);
-      // during question, end early if everyone currently connected has answered
-      const connectedPlayers = Object.values(players).filter(p => p.connected).length;
 
-      if(meta.phase==="question" &&
-        connectedPlayers > 0 &&
-        answeredCount() >= connectedPlayers){
+      if(left<=0){
         clearInterval(ticker);
         onEnd();
-        return;
       }
-      if(left<=0){clearInterval(ticker);onEnd();}
     },100);
   }
 
@@ -533,7 +557,7 @@ function Host(){
   }
   function refreshDynamic(){
     if(meta.phase==="lobby"){ const c=$("#plist"); if(c)c.innerHTML=lobbyChips(); const n=$("#pcount"); if(n)n.textContent = Object.values(players).filter(p => p.connected).length; }
-    if(meta.phase==="question"){ const a=$("#acount"); if(a)a.textContent=answeredCount()+" / "+Object.keys(players).length; }
+    if(meta.phase==="question"){ const a=$("#acount"); if(a){a.textContent =answeredCount()+" / "+(meta.expectedPlayers || []).length;} }
     if(meta.phase==="reveal"||meta.phase==="ended"){ const b=$("#board"); if(b)b.innerHTML=boardHTML(scoreboard(),null,meta.phase==="ended"); }
   }
 
