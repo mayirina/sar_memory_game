@@ -502,9 +502,15 @@ function Host(){
       const bar=$("#bar"); const tv=$("#tv");
       if(bar)bar.style.width=Math.max(0,Math.min(100,left/dur*100))+"%";
       if(tv)tv.textContent=fmt(left);
-      // during question, end early if everyone answered
-      if(meta.phase==="question" && Object.keys(players).length>0 && false){
-        clearInterval(ticker); onEnd(); return;
+      // during question, end early if everyone currently connected has answered
+      const connectedPlayers = Object.values(players).filter(p => p.connected).length;
+
+      if(meta.phase==="question" &&
+        connectedPlayers > 0 &&
+        answeredCount() >= connectedPlayers){
+        clearInterval(ticker);
+        onEnd();
+        return;
       }
       if(left<=0){clearInterval(ticker);onEnd();}
     },100);
@@ -526,7 +532,7 @@ function Host(){
     if(meta.phase==="ended") return root.appendChild(hostEnded());
   }
   function refreshDynamic(){
-    if(meta.phase==="lobby"){ const c=$("#plist"); if(c)c.innerHTML=lobbyChips(); const n=$("#pcount"); if(n)n.textContent=Object.keys(players).length; }
+    if(meta.phase==="lobby"){ const c=$("#plist"); if(c)c.innerHTML=lobbyChips(); const n=$("#pcount"); if(n)n.textContent = Object.values(players).filter(p => p.connected).length; }
     if(meta.phase==="question"){ const a=$("#acount"); if(a)a.textContent=answeredCount()+" / "+Object.keys(players).length; }
     if(meta.phase==="reveal"||meta.phase==="ended"){ const b=$("#board"); if(b)b.innerHTML=boardHTML(scoreboard(),null,meta.phase==="ended"); }
   }
@@ -699,8 +705,12 @@ function Player(code){
       myName=nm;
       sessionStorage.setItem("pid_"+code,pid);
       sessionStorage.setItem("name_"+code,nm);
-      playersRef(code).child(pid).set({name:nm,joinedAt:Date.now()});
-      playersRef(code).child(pid).onDisconnect().remove();
+      playersRef(code).child(pid).set({
+        name: nm,
+        joinedAt: Date.now(),
+        connected: true
+      });
+      
       attach();
     };
     el.querySelector("#nm").addEventListener("keydown",e=>{if(e.key==="Enter")el.querySelector("#go").click();});
@@ -708,19 +718,74 @@ function Player(code){
   }
 
   function attach(){
-    // ensure player record exists (in case of rejoin)
-    playersRef(code).child(pid).update({name:myName,joinedAt:Date.now()});
-    playersRef(code).child(pid).onDisconnect().remove();
-    metaRef(code).on("value",s=>{meta=s.val()||meta;paint();});
-    playersRef(code).on("value",s=>{players=s.val()||{};paint();});
-    answersRef(code).on("value",s=>{answers=s.val()||{};paint();});
+    const playerRef = playersRef(code).child(pid);
+  
+    // Alte onDisconnect-Aktion entfernen, falls diese Session
+    // bereits einmal verbunden war
+    playerRef.onDisconnect().cancel();
+  
+    // Spieler als verbunden markieren
+    playerRef.update({
+      name: myName,
+      joinedAt: Date.now(),
+      connected: true
+    });
+  
+    // Bei Verbindungsabbruch NICHT den Spieler löschen,
+    // sondern nur den Verbindungsstatus ändern
+    playerRef.onDisconnect().update({
+      connected: false
+    });
+  
+    metaRef(code).on("value",s=>{
+      meta=s.val()||meta;
+      paint();
+    });
+  
+    playersRef(code).on("value",s=>{
+      players=s.val()||{};
+      paint();
+    });
+  
+    answersRef(code).on("value",s=>{
+      answers=s.val()||{};
+      paint();
+    });
   }
 
   function scoreboard(){
-    const tot={};
-    Object.values(answers||{}).forEach(round=>{Object.entries(round||{}).forEach(([id,a])=>{tot[id]=(tot[id]||0)+(a.pts||0);});});
-    Object.keys(players||{}).forEach(id=>{if(!(id in tot))tot[id]=0;});
-    return Object.entries(tot).map(([id,pts])=>({pid:id,pts,name:(players[id]&&players[id].name)||"—"})).sort((a,b)=>b.pts-a.pts);
+    const tot = {};
+    const names = {};
+  
+    // Namen und Punkte aus den Antworten übernehmen
+    Object.values(answers || {}).forEach(round => {
+      Object.entries(round || {}).forEach(([id, a]) => {
+        tot[id] = (tot[id] || 0) + (a.pts || 0);
+  
+        if (a.name) {
+          names[id] = a.name;
+        }
+      });
+    });
+  
+    // Aktuelle Player-Daten haben Vorrang
+    Object.keys(players || {}).forEach(id => {
+      if (!(id in tot)) {
+        tot[id] = 0;
+      }
+  
+      if (players[id]?.name) {
+        names[id] = players[id].name;
+      }
+    });
+  
+    return Object.entries(tot)
+      .map(([id, pts]) => ({
+        pid: id,
+        pts,
+        name: names[id] || "—"
+      }))
+      .sort((a,b) => b.pts - a.pts);
   }
   function myRank(sb){return sb.findIndex(x=>x.pid===pid)+1;}
   function myTotal(sb){const m=sb.find(x=>x.pid===pid);return m?m.pts:0;}
